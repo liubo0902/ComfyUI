@@ -5,6 +5,8 @@ import os
 import importlib.util
 import folder_paths
 import time
+import shutil
+import re
 
 def execute_prestartup_script():
     def execute_script(script_path):
@@ -158,7 +160,73 @@ def load_extra_path_config(yaml_path):
                     full_path = os.path.join(base_path, full_path)
                 print("Adding extra search path", x, full_path)
                 folder_paths.add_model_folder_path(x, full_path)
+def natural_sort_key(s, regex=re.compile('([0-9]+)')):
+    return [int(text) if text.isdigit() else text.lower() for text in regex.split(s)]
 
+def walk_files(path, allowed_extensions=None):
+    if not os.path.exists(path):
+        return
+
+    if allowed_extensions is not None:
+        allowed_extensions = set(allowed_extensions)
+
+    items = list(os.walk(path, followlinks=True))
+    items = sorted(items, key=lambda x: natural_sort_key(x[0]))
+
+    for root, _, files in items:
+        for filename in sorted(files, key=natural_sort_key):
+            if allowed_extensions is not None:
+                _, ext = os.path.splitext(filename)
+                if ext not in allowed_extensions:
+                    continue
+
+            yield os.path.join(root, filename)
+
+def load_work_dir(data_dir):
+    if not os.path.exists(data_dir):
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            os.makedirs(os.path.join(data_dir, 'outputs'), exist_ok=True)
+            folder_paths.set_output_directory(os.path.join(data_dir, 'output'))
+        except:
+            pass
+    if os.path.exists(os.path.join(data_dir, 'models/Stable-diffusion')):
+        webui_dict = {
+            'checkpoints': ['models/Stable-diffusion'], 
+            'configs': ['models/Stable-diffusion'], 
+            'vae': ['models/VAE'],
+            'loras': ['models/Lora', 'models/LyCORIS'],
+            'upscale_models': ['models/ESRGAN', 'models/RealESRGAN', 'models/SwinIR'], 
+            'embeddings': ['embeddings'], 
+            'hypernetworks': ['models/hypernetworks'], 
+            'controlnet': ['models/ControlNet']
+        }
+        for key in webui_dict:
+            for folder_name in webui_dict[key]:
+                if os.path.exists(os.path.join(data_dir, folder_name)):
+                    folder_paths.add_model_folder_path(key, os.path.join(data_dir, folder_name))
+    if os.path.exists(os.path.join(data_dir, 'models/checkpoints')):
+        cmui_dict = {
+            'checkpoints': 'models/checkpoints', 
+            'clip': 'models/clip',
+            'clip_vision': 'models/clip_vision',
+            'configs': 'models/configs',
+            'controlnet': 'models/controlnet', 
+            'embeddings': 'models/embeddings',
+            'loras': 'models/loras',
+            'upscale_models': 'models/upscale_models',
+            'vae': 'models/vae'
+        }
+        for key in cmui_dict:
+            folder_name = webui_dict[key]
+            if os.path.exists(os.path.join(data_dir, folder_name)):
+                folder_paths.add_model_folder_path(key, os.path.join(data_dir, folder_name))
+    os.makedirs(os.path.join(data_dir, 'custom_nodes'), exist_ok=True)
+    for custom_node_folder in os.listdir(os.path.join(data_dir, 'custom_nodes')):
+        for filepath in walk_files(os.path.join(data_dir, 'custom_nodes', custom_node_folder)):
+            folder = os.path.basename(filepath).replace(os.path.join(data_dir, 'custom_nodes'), 'custom_nodes')
+            os.makedirs(folder, exist_ok=True)
+            shutil.copyfile(filepath, filepath.replace(os.path.join(data_dir, 'custom_nodes'), 'custom_nodes'))
 
 if __name__ == "__main__":
     if args.temp_directory:
@@ -179,6 +247,8 @@ if __name__ == "__main__":
     if args.extra_model_paths_config:
         for config_path in itertools.chain(*args.extra_model_paths_config):
             load_extra_path_config(config_path)
+    if args.data_dir:
+        load_work_dir(args.data_dir)
 
     init_custom_nodes()
 

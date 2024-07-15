@@ -119,6 +119,7 @@ parser.add_argument("--windows-standalone-build", action="store_true", help="Win
 
 parser.add_argument("--disable-metadata", action="store_true", help="Disable saving prompt metadata in files.")
 parser.add_argument("--data-dir", type=str, default=None, help="data dir for model paths.")
+parser.add_argument("--disable-all-custom-nodes", action="store_true", help="Disable loading all custom nodes.")
 
 parser.add_argument("--multi-user", action="store_true", help="Enables per-user storage.")
 

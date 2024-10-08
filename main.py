@@ -9,7 +9,7 @@ from comfy.cli_args import args
 from app.logger import setup_logger
 
 
-setup_logger(verbose=args.verbose)
+setup_logger(log_level=args.verbose)
 
 
 def execute_prestartup_script():
@@ -63,6 +63,7 @@ import threading
 import gc
 
 import logging
+import utils.extra_config
 
 if os.name == "nt":
     logging.getLogger("xformers").addFilter(lambda record: 'A matching Triton is not available' not in record.getMessage())
@@ -85,7 +86,6 @@ if args.windows_standalone_build:
         pass
 
 import comfy.utils
-import yaml
 
 import execution
 import server
@@ -160,7 +160,10 @@ def prompt_worker(q, server):
                 need_gc = False
 
 async def run(server, address='', port=8188, verbose=True, call_on_start=None):
-    await asyncio.gather(server.start(address, port, verbose, call_on_start), server.publish_loop())
+    addresses = []
+    for addr in address.split(","):
+        addresses.append((addr, port))
+    await asyncio.gather(server.start_multi_address(addresses, call_on_start), server.publish_loop())
 
 
 def hijack_progress(server):
@@ -179,93 +182,6 @@ def cleanup_temp():
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-
-def load_extra_path_config(yaml_path):
-    with open(yaml_path, 'r') as stream:
-        config = yaml.safe_load(stream)
-    for c in config:
-        conf = config[c]
-        if conf is None:
-            continue
-        base_path = None
-        if "base_path" in conf:
-            base_path = conf.pop("base_path")
-        for x in conf:
-            for y in conf[x].split("\n"):
-                if len(y) == 0:
-                    continue
-                full_path = y
-                if base_path is not None:
-                    full_path = os.path.join(base_path, full_path)
-                logging.info("Adding extra search path {} {}".format(x, full_path))
-                folder_paths.add_model_folder_path(x, full_path)
-def natural_sort_key(s, regex=re.compile('([0-9]+)')):
-    return [int(text) if text.isdigit() else text.lower() for text in regex.split(s)]
-
-def walk_files(path, allowed_extensions=None):
-    if not os.path.exists(path):
-        return
-
-    if allowed_extensions is not None:
-        allowed_extensions = set(allowed_extensions)
-
-    items = list(os.walk(path, followlinks=True))
-    items = sorted(items, key=lambda x: natural_sort_key(x[0]))
-
-    for root, _, files in items:
-        for filename in sorted(files, key=natural_sort_key):
-            if allowed_extensions is not None:
-                _, ext = os.path.splitext(filename)
-                if ext not in allowed_extensions:
-                    continue
-
-            yield os.path.join(root, filename)
-
-def load_work_dir(data_dir):
-    if not os.path.exists(data_dir):
-        try:
-            os.makedirs(data_dir, exist_ok=True)
-            os.makedirs(os.path.join(data_dir, 'outputs'), exist_ok=True)
-            folder_paths.set_output_directory(os.path.join(data_dir, 'output'))
-        except:
-            pass
-    if os.path.exists(os.path.join(data_dir, 'models/Stable-diffusion')):
-        webui_dict = {
-            'checkpoints': ['models/Stable-diffusion'], 
-            'configs': ['models/Stable-diffusion'], 
-            'vae': ['models/VAE'],
-            'loras': ['models/Lora', 'models/LyCORIS'],
-            'upscale_models': ['models/ESRGAN', 'models/RealESRGAN', 'models/SwinIR'], 
-            'embeddings': ['embeddings'], 
-            'hypernetworks': ['models/hypernetworks'], 
-            'controlnet': ['models/ControlNet']
-        }
-        for key in webui_dict:
-            for folder_name in webui_dict[key]:
-                if os.path.exists(os.path.join(data_dir, folder_name)):
-                    folder_paths.add_model_folder_path(key, os.path.join(data_dir, folder_name))
-    if os.path.exists(os.path.join(data_dir, 'models/checkpoints')):
-        cmui_dict = {
-            'checkpoints': 'models/checkpoints', 
-            'clip': 'models/clip',
-            'clip_vision': 'models/clip_vision',
-            'configs': 'models/configs',
-            'controlnet': 'models/controlnet', 
-            'embeddings': 'models/embeddings',
-            'loras': 'models/loras',
-            'upscale_models': 'models/upscale_models',
-            'vae': 'models/vae'
-        }
-        for key in cmui_dict:
-            folder_name = webui_dict[key]
-            if os.path.exists(os.path.join(data_dir, folder_name)):
-                folder_paths.add_model_folder_path(key, os.path.join(data_dir, folder_name))
-    os.makedirs(os.path.join(data_dir, 'custom_nodes'), exist_ok=True)
-    for custom_node_folder in os.listdir(os.path.join(data_dir, 'custom_nodes')):
-        for filepath in walk_files(os.path.join(data_dir, 'custom_nodes', custom_node_folder)):
-            folder = os.path.basename(filepath).replace(os.path.join(data_dir, 'custom_nodes'), 'custom_nodes')
-            os.makedirs(folder, exist_ok=True)
-            shutil.copyfile(filepath, filepath.replace(os.path.join(data_dir, 'custom_nodes'), 'custom_nodes'))
 
 if __name__ == "__main__":
     if args.temp_directory:
@@ -288,13 +204,11 @@ if __name__ == "__main__":
 
     extra_model_paths_config_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "extra_model_paths.yaml")
     if os.path.isfile(extra_model_paths_config_path):
-        load_extra_path_config(extra_model_paths_config_path)
+        utils.extra_config.load_extra_path_config(extra_model_paths_config_path)
 
     if args.extra_model_paths_config:
         for config_path in itertools.chain(*args.extra_model_paths_config):
-            load_extra_path_config(config_path)
-    if args.data_dir:
-        load_work_dir(args.data_dir)
+            utils.extra_config.load_extra_path_config(config_path)
 
     nodes.init_extra_nodes(init_custom_nodes=not args.disable_all_custom_nodes)
 
@@ -315,21 +229,30 @@ if __name__ == "__main__":
     folder_paths.add_model_folder_path("clip", os.path.join(folder_paths.get_output_directory(), "clip"))
     folder_paths.add_model_folder_path("vae", os.path.join(folder_paths.get_output_directory(), "vae"))
     folder_paths.add_model_folder_path("diffusion_models", os.path.join(folder_paths.get_output_directory(), "diffusion_models"))
+    folder_paths.add_model_folder_path("loras", os.path.join(folder_paths.get_output_directory(), "loras"))
 
     if args.input_directory:
         input_dir = os.path.abspath(args.input_directory)
         logging.info(f"Setting input directory to: {input_dir}")
         folder_paths.set_input_directory(input_dir)
+    
+    if args.user_directory:
+        user_dir = os.path.abspath(args.user_directory)
+        logging.info(f"Setting user directory to: {user_dir}")
+        folder_paths.set_user_directory(user_dir)
 
     if args.quick_test_for_ci:
         exit(0)
 
+    os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
     call_on_start = None
     if args.auto_launch:
         def startup_server(scheme, address, port):
             import webbrowser
             if os.name == 'nt' and address == '0.0.0.0':
                 address = '127.0.0.1'
+            if ':' in address:
+                address = "[{}]".format(address)
             webbrowser.open(f"{scheme}://{address}:{port}")
         call_on_start = startup_server
 

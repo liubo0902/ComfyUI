@@ -62,9 +62,8 @@ class CLIPTextEncode:
 
     def encode(self, clip, text):
         tokens = clip.tokenize(text)
-        output = clip.encode_from_tokens(tokens, return_pooled=True, return_dict=True)
-        cond = output.pop("cond")
-        return ([[cond, output]], )
+        return (clip.encode_from_tokens_scheduled(tokens), )
+        
 
 class ConditioningCombine:
     @classmethod
@@ -1008,14 +1007,19 @@ class StyleModelApply:
         return {"required": {"conditioning": ("CONDITIONING", ),
                              "style_model": ("STYLE_MODEL", ),
                              "clip_vision_output": ("CLIP_VISION_OUTPUT", ),
+                             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.001}),
+                             "strength_type": (["multiply"], ),
                              }}
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "apply_stylemodel"
 
     CATEGORY = "conditioning/style_model"
 
-    def apply_stylemodel(self, clip_vision_output, style_model, conditioning):
+    def apply_stylemodel(self, clip_vision_output, style_model, conditioning, strength, strength_type):
         cond = style_model.get_cond(clip_vision_output).flatten(start_dim=0, end_dim=1).unsqueeze(dim=0)
+        if strength_type == "multiply":
+            cond *= strength
+
         c = []
         for t in conditioning:
             n = [torch.cat((t[0], cond), dim=1), t[1].copy()]
@@ -2144,6 +2148,7 @@ def init_builtin_extra_nodes():
         "nodes_mochi.py",
         "nodes_slg.py",
         "nodes_lt.py",
+        "nodes_hooks.py",
     ]
 
     import_failed = []

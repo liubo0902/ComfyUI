@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from comfy.ldm.modules.diffusionmodules.mmdit import TimestepEmbedder, RMSNorm
 from comfy.ldm.modules.attention import optimized_attention_masked
+from comfy.ldm.flux.layers import EmbedND
 
 
 def modulate(x, scale):
@@ -92,10 +93,9 @@ class JointAttention(nn.Module):
                 and key tensor with rotary embeddings.
         """
 
-        x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
-        freqs_cis = freqs_cis.unsqueeze(2)
-        x_out = torch.view_as_real(x * freqs_cis).flatten(3)
-        return x_out.type_as(x_in)
+        t_ = x_in.reshape(*x_in.shape[:-1], -1, 1, 2)
+        t_out = freqs_cis[..., 0] * t_[..., 0] + freqs_cis[..., 1] * t_[..., 1]
+        return t_out.reshape(*x_in.shape)
 
     def forward(
         self,
@@ -130,6 +130,7 @@ class JointAttention(nn.Module):
 
         xq = self.q_norm(xq)
         xk = self.k_norm(xk)
+
         xq = JointAttention.apply_rotary_emb(xq, freqs_cis=freqs_cis)
         xk = JointAttention.apply_rotary_emb(xk, freqs_cis=freqs_cis)
 
@@ -351,25 +352,6 @@ class FinalLayer(nn.Module):
         return x
 
 
-class RopeEmbedder:
-    def __init__(
-        self, theta: float = 10000.0, axes_dims: List[int] = (16, 56, 56), axes_lens: List[int] = (1, 512, 512)
-    ):
-        super().__init__()
-        self.theta = theta
-        self.axes_dims = axes_dims
-        self.axes_lens = axes_lens
-        self.freqs_cis = NextDiT.precompute_freqs_cis(self.axes_dims, self.axes_lens, theta=self.theta)
-
-    def __call__(self, ids: torch.Tensor):
-        self.freqs_cis = [freqs_cis.to(ids.device) for freqs_cis in self.freqs_cis]
-        result = []
-        for i in range(len(self.axes_dims)):
-            index = ids[:, :, i:i+1].repeat(1, 1, self.freqs_cis[i].shape[-1]).to(torch.int64)
-            result.append(torch.gather(self.freqs_cis[i].unsqueeze(0).repeat(index.shape[0], 1, 1), dim=1, index=index))
-        return torch.cat(result, dim=-1)
-
-
 class NextDiT(nn.Module):
     """
     Diffusion model with a Transformer backbone.
@@ -480,7 +462,7 @@ class NextDiT(nn.Module):
         assert (dim // n_heads) == sum(axes_dims)
         self.axes_dims = axes_dims
         self.axes_lens = axes_lens
-        self.rope_embedder = RopeEmbedder(axes_dims=axes_dims, axes_lens=axes_lens)
+        self.rope_embedder = EmbedND(dim=dim // n_heads, theta=10000.0, axes_dim=axes_dims)
         self.dim = dim
         self.n_heads = n_heads
 
@@ -550,7 +532,7 @@ class NextDiT(nn.Module):
             position_ids[i, cap_len:cap_len+img_len, 1] = row_ids
             position_ids[i, cap_len:cap_len+img_len, 2] = col_ids
 
-        freqs_cis = self.rope_embedder(position_ids)
+        freqs_cis = self.rope_embedder(position_ids).movedim(1, 2).to(dtype)
 
         # build freqs_cis for cap and image individually
         cap_freqs_cis_shape = list(freqs_cis.shape)
@@ -581,12 +563,13 @@ class NextDiT(nn.Module):
             flat_x.append(img)
         x = flat_x
         padded_img_embed = torch.zeros(bsz, max_img_len, x[0].shape[-1], device=device, dtype=x[0].dtype)
-        padded_img_mask = torch.zeros(bsz, max_img_len, dtype=torch.bool, device=device)
+        padded_img_mask = torch.zeros(bsz, max_img_len, dtype=dtype, device=device)
         for i in range(bsz):
             padded_img_embed[i, :l_effective_img_len[i]] = x[i]
-            padded_img_mask[i, :l_effective_img_len[i]] = True
+            padded_img_mask[i, l_effective_img_len[i]:] = -torch.finfo(dtype).max
 
         padded_img_embed = self.x_embedder(padded_img_embed)
+        padded_img_mask = padded_img_mask.unsqueeze(1)
         for layer in self.noise_refiner:
             padded_img_embed = layer(padded_img_embed, padded_img_mask, img_freqs_cis, t)
 
@@ -605,7 +588,6 @@ class NextDiT(nn.Module):
             padded_full_embed[i, cap_len:cap_len+img_len] = padded_img_embed[i, :img_len]
 
         return padded_full_embed, mask, img_sizes, l_effective_cap_len, freqs_cis
-
 
     # def forward(self, x, t, cap_feats, cap_mask):
     def forward(self, x, timesteps, context, num_tokens, attention_mask=None, **kwargs):
@@ -635,37 +617,3 @@ class NextDiT(nn.Module):
 
         return -x
 
-    @staticmethod
-    def precompute_freqs_cis(
-        dim: List[int],
-        end: List[int],
-        theta: float = 10000.0,
-    ):
-        """
-        Precompute the frequency tensor for complex exponentials (cis) with
-        given dimensions.
-
-        This function calculates a frequency tensor with complex exponentials
-        using the given dimension 'dim' and the end index 'end'. The 'theta'
-        parameter scales the frequencies. The returned tensor contains complex
-        values in complex64 data type.
-
-        Args:
-            dim (list): Dimension of the frequency tensor.
-            end (list): End index for precomputing frequencies.
-            theta (float, optional): Scaling factor for frequency computation.
-                Defaults to 10000.0.
-
-        Returns:
-            torch.Tensor: Precomputed frequency tensor with complex
-                exponentials.
-        """
-        freqs_cis = []
-        for i, (d, e) in enumerate(zip(dim, end)):
-            freqs = 1.0 / (theta ** (torch.arange(0, d, 2, dtype=torch.float64, device="cpu") / d))
-            timestep = torch.arange(e, device=freqs.device, dtype=torch.float64)
-            freqs = torch.outer(timestep, freqs).float()
-            freqs_cis_i = torch.polar(torch.ones_like(freqs), freqs).to(torch.complex64)  # complex64
-            freqs_cis.append(freqs_cis_i)
-
-        return freqs_cis

@@ -489,7 +489,7 @@ class SaveLatent:
         file = os.path.join(full_output_folder, file)
 
         output = {}
-        output["latent_tensor"] = samples["samples"]
+        output["latent_tensor"] = samples["samples"].contiguous()
         output["latent_format_version_0"] = torch.tensor([])
 
         comfy.utils.save_torch_file(output, file, metadata=metadata)
@@ -770,6 +770,7 @@ class VAELoader:
             vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
             sd = comfy.utils.load_torch_file(vae_path)
         vae = comfy.sd.VAE(sd=sd)
+        vae.throw_exception_if_invalid()
         return (vae,)
 
 class ControlNetLoader:
@@ -2263,6 +2264,7 @@ def init_builtin_extra_nodes():
         "nodes_video.py",
         "nodes_lumina2.py",
         "nodes_wan.py",
+        "nodes_hunyuan3d.py",
     ]
 
     import_failed = []

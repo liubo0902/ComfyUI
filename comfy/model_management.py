@@ -295,6 +295,7 @@ except:
     pass
 
 
+SUPPORT_FP8_OPS = args.supports_fp8_compute
 try:
     if is_amd():
         try:
@@ -306,8 +307,12 @@ try:
         logging.info("ROCm version: {}".format(rocm_version))
         if args.use_split_cross_attention == False and args.use_quad_cross_attention == False:
             if torch_version_numeric >= (2, 7):  # works on 2.6 but doesn't actually seem to improve much
-                if any((a in arch) for a in ["gfx1100", "gfx1101", "gfx1151"]):  # TODO: more arches
+                if any((a in arch) for a in ["gfx90a", "gfx942", "gfx1100", "gfx1101", "gfx1151"]):  # TODO: more arches, TODO: gfx1201 and gfx950
                     ENABLE_PYTORCH_ATTENTION = True
+        if torch_version_numeric >= (2, 7) and rocm_version >= (6, 4):
+            if any((a in arch) for a in ["gfx1201", "gfx942", "gfx950"]):  # TODO: more arches
+                SUPPORT_FP8_OPS = True
+
 except:
     pass
 
@@ -1262,7 +1267,7 @@ def should_use_bf16(device=None, model_params=0, prioritize_performance=True, ma
     return False
 
 def supports_fp8_compute(device=None):
-    if args.supports_fp8_compute:
+    if SUPPORT_FP8_OPS:
         return True
 
     if not is_nvidia():

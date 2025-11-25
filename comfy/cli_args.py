@@ -161,7 +161,7 @@ parser.add_argument("--disable-metadata", action="store_true", help="Disable sav
 parser.add_argument("--data-dir", type=str, default=None, help="data dir for model paths.")
 parser.add_argument("--disable-all-custom-nodes", action="store_true", help="Disable loading all custom nodes.")
 parser.add_argument("--whitelist-custom-nodes", type=str, nargs='+', default=[], help="Specify custom node folders to load even when --disable-all-custom-nodes is enabled.")
-parser.add_argument("--disable-api-nodes", action="store_true", help="Disable loading all api nodes.")
+parser.add_argument("--disable-api-nodes", action="store_true", help="Disable loading all api nodes. Also prevents the frontend from communicating with the internet.")
 
 parser.add_argument("--multi-user", action="store_true", help="Enables per-user storage.")
 
